@@ -112,6 +112,32 @@ class ReclamationsTests(unittest.TestCase):
             count = db().execute("SELECT COUNT(*) FROM users WHERE email='import@test.ma'").fetchone()[0]
             self.assertEqual(count, 1)
 
+    def test_imported_account_must_change_password(self):
+        self.login("admin@test.ma")
+        content = (
+            "num_apogee,nom_etudiant,prenom,email,filiere,niveau\n"
+            "A200,DUPONT,Lea,lea@test.ma,GEE,DUT 1\n"
+        )
+        resp = self.client.post("/admin/students/import", data={
+            "_csrf": self.csrf(), "csv_file": (io.BytesIO(content.encode()), "students.csv")
+        }, content_type="multipart/form-data")
+        temporary_password = resp.data.decode().splitlines()[1].split(",")[2]
+        self.client.post("/logout", data={"_csrf": self.csrf()})
+        self.client.get("/login")
+        login_resp = self.client.post("/login", data={
+            "_csrf": self.csrf(), "email": "lea@test.ma", "password": temporary_password
+        })
+        self.assertEqual(login_resp.status_code, 302)
+        self.assertIn("/account/change-password", login_resp.headers["Location"])
+        self.assertEqual(self.client.get("/student").status_code, 302)
+        changed = self.client.post("/account/change-password", data={
+            "_csrf": self.csrf(), "old_password": temporary_password,
+            "new_password": "MyDifferentStrongPass!123",
+            "confirm_password": "MyDifferentStrongPass!123",
+        })
+        self.assertEqual(changed.status_code, 302)
+        self.assertEqual(self.client.get("/student").status_code, 200)
+
     def test_plaintext_password_column_rejected(self):
         self.login("admin@test.ma")
         content = ("num_apogee,nom_etudiant,prenom,email,filiere,niveau,mot_de_passe\n"
