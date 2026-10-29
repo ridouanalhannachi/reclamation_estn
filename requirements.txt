@@ -2,3 +2,6 @@ Flask>=3.1,<4.0
 streamlit>=1.50,<2.0
 SQLAlchemy>=2.0,<3.0
 psycopg[binary]>=3.2,<4.0
+google-auth>=2.35,<3.0
+google-auth-oauthlib>=1.2,<2.0
+google-api-python-client>=2.150,<3.0
