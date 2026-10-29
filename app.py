@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
     program TEXT NOT NULL DEFAULT '',
     level TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
+    password_change_required INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL CHECK(role IN ('student', 'admin'))
 );
 CREATE TABLE IF NOT EXISTS claims (
@@ -149,6 +150,9 @@ def create_app(test_config=None):
             submitted = request.form.get("_csrf", "")
             if not expected or not hmac.compare_digest(expected, submitted):
                 abort(400, description="Jeton de formulaire invalide.")
+        if (g.user is not None and g.user["password_change_required"]
+                and request.endpoint not in ("change_password", "logout", "static")):
+            return redirect(url_for("change_password"))
 
     @app.after_request
     def security_headers(response):
@@ -205,9 +209,33 @@ def create_app(test_config=None):
                 session["user_id"] = user["id"]
                 session.permanent = False
                 csrf_token()
-                return redirect(url_for("index"))
+                return redirect(url_for("change_password") if user["password_change_required"] else url_for("index"))
             flash("Identifiants invalides.", "error")
         return render_template("login.html")
+
+    @app.route("/account/change-password", methods=["GET", "POST"])
+    @login_required()
+    def change_password():
+        if request.method == "POST":
+            old_password = request.form.get("old_password", "")
+            new_password = request.form.get("new_password", "")
+            confirm_password = request.form.get("confirm_password", "")
+            if (not check_password_hash(g.user["password_hash"], old_password)
+                    or len(new_password) < 12
+                    or new_password != confirm_password
+                    or new_password == old_password):
+                flash("Vérifiez l'ancien mot de passe et choisissez un nouveau mot de passe distinct (12 caractères minimum).", "error")
+            else:
+                with db():
+                    db().execute(
+                        "UPDATE users SET password_hash=?, password_change_required=0 WHERE id=?",
+                        (generate_password_hash(new_password), g.user["id"]),
+                    )
+                session.pop("_csrf", None)
+                csrf_token()
+                flash("Mot de passe modifié.", "success")
+                return redirect(url_for("index"))
+        return render_template("change_password.html")
 
     @app.post("/logout")
     @login_required()
@@ -396,7 +424,7 @@ def create_app(test_config=None):
                 temporary_password = secrets.token_urlsafe(18)
                 db().execute(
                     "INSERT INTO users (student_number, last_name, first_name, email, "
-                    "program, level, password_hash, role) VALUES (?, ?, ?, ?, ?, ?, ?, 'student')",
+                    "program, level, password_hash, role, password_change_required) VALUES (?, ?, ?, ?, ?, ?, ?, 'student', 1)",
                     (
                         values["num_apogee"], values["nom_etudiant"], values["prenom"],
                         values["email"], values["filiere"], values["niveau"],
