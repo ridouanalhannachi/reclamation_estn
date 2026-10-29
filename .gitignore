@@ -14,3 +14,6 @@ __pycache__/
 venv/
 *.py[cod]
 .DS_Store
+# Secrets de déploiement Streamlit Cloud
+.streamlit/secrets.toml
+.streamlit/secrets.*.toml
