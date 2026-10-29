@@ -52,7 +52,7 @@ def configuration(name):
         return value
     try:
         return str(st.secrets.get(name, ""))
-    except (FileNotFoundError, KeyError, AttributeError):
+    except Exception:  # Aucun secrets.toml local : la configuration vient de l'environnement.
         return ""
 
 
@@ -67,7 +67,7 @@ database_url = configuration("DATABASE_URL")
 if not database_url:
     st.error("Base de données non configurée. Ajoutez DATABASE_URL dans les secrets de l'application Streamlit Cloud.")
     st.info("En production, utilisez PostgreSQL externe. Ne stockez pas les réclamations dans un fichier SQLite sur Streamlit Cloud.")
-    st.code('[DATABASE_URL]\n# Utilisez la clef racine DATABASE_URL dans vos secrets, pas une section.', language="text")
+    st.caption('Définir DATABASE_URL dans Advanced settings → Secrets, à la racine du fichier TOML.')
     st.stop()
 
 if not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
@@ -312,9 +312,7 @@ if user["role"] == "student":
             except (ValueError, PermissionError) as exc:
                 st.error(str(exc))
             else:
-                st.session_state["selected_claim"] = claim_id
-                st.success("Votre réclamation a été enregistrée.")
-                st.rerun()
+                st.success(f"Votre réclamation #{claim_id} a été enregistrée. Consultez-la dans Mes réclamations.")
     else:
         if not render_detail():
             st.markdown('<div class="brand">ESPACE ÉTUDIANT</div>', unsafe_allow_html=True)
