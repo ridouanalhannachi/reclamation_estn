@@ -181,3 +181,64 @@ BOOTSTRAP_ADMIN_PASSWORD = "CHOISIR_UN_MOT_DE_PASSE_INITIAL_TRES_FORT"
 **Les valeurs ci-dessus sont des exemples qui ne permettent pas de se connecter.** Créer une base PostgreSQL réelle auprès d'un fournisseur, puis utiliser sa chaîne de connexion. Les mots de passe d'administration sont créés seulement à l'initialisation d'une base sans administrateur ; modifier ensuite la variable dans Secrets **ne réinitialise pas** le compte administrateur existant.
 
 Ne jamais poster la vraie chaîne `DATABASE_URL`, une capture de Secrets ou un log contenant des identifiants. Vérifier d'abord les codes sûrs affichés dans l'application.
+
+---
+
+## v1.2 — Streamlit avec Google Drive (sans PostgreSQL)
+
+Google Drive remplace PostgreSQL dès que le secret GDRIVE_TOKEN_B64 est présent. Les comptes, réclamations, pièces jointes et décisions sont alors stockés dans le dossier privé appDataFolder. Aucune base DATABASE_URL n'est requise dans ce mode.
+
+**Important : le jeton OAuth communiqué précédemment est exposé. Révoquez l'ancienne autorisation Google et ne réutilisez jamais ce jeton.** Base64 n'est pas du chiffrement.
+
+### 1. Préparer un nouveau client Google OAuth
+
+1. Ouvrir https://console.cloud.google.com/ ; créer ou choisir un projet.
+2. Activer Google Drive API via APIs & Services → Library.
+3. Configurer Google Auth Platform / OAuth consent screen. Pour un compte Google personnel, utiliser External ; ajouter le compte Google dans Test users si nécessaire.
+4. Dans Clients, créer un OAuth Client ID de type **Desktop app** et télécharger le nouveau client_secret.json sur votre PC privé. Ne jamais ajouter ce fichier à Git.
+5. L'application demande uniquement le scope drive.appdata (données privées de cette application, et non l'ensemble du Drive).
+
+**Attention :** une application OAuth « External / Testing » peut délivrer un refresh token qui expire après 7 jours. Pour un service durable, configurer le statut et l'approbation OAuth appropriés selon les règles Google.
+
+### 2. Générer le jeton localement sur Windows 11
+
+Dans PowerShell, depuis une copie à jour du dépôt :
+
+~~~powershell
+git pull origin main
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python scripts/create_gdrive_token.py --client-secret "C:\CHEMIN\PRIVE\client_secret.json"
+~~~
+
+Après autorisation Google dans le navigateur, le script crée un fichier privé hors du dépôt :
+
+~~~text
+%USERPROFILE%\reclamation-estn-private\gdrive-secrets.toml
+~~~
+
+Ce fichier contient la ligne GDRIVE_TOKEN_B64. Le script n'écrase pas un fichier existant.
+
+### 3. Configurer Streamlit Cloud
+
+Ouvrir https://share.streamlit.io → application → ⋯ → Settings → Secrets. Entrer ces valeurs en racine TOML avec des valeurs **réellement nouvelles** :
+
+~~~toml
+GDRIVE_TOKEN_B64 = "COLLER_LE_NOUVEAU_JETON_BASE64"
+BOOTSTRAP_ADMIN_EMAIL = "admin@exemple.ma"
+BOOTSTRAP_ADMIN_PASSWORD = "CHOISIR_UN_MOT_DE_PASSE_INITIAL_TRES_FORT"
+~~~
+
+Enregistrer puis redémarrer l'application. Aucun DATABASE_URL, APP_MODE ou APP_PASSWORD n'est nécessaire ; un ancien DATABASE_URL est ignoré quand GDRIVE_TOKEN_B64 est présent.
+
+Le premier administrateur est créé dans le nouvel espace Google Drive et doit changer son mot de passe à sa première connexion. Les étudiants sont ajoutés par import CSV, chaque compte possédant son propre mot de passe haché.
+
+### Limites et confidentialité
+
+- Ne pas déposer le fichier de jeton, les secrets Google OAuth ou les identifiants étudiants dans GitHub, les captures d'écran ou les discussions.
+- appDataFolder est caché dans l'interface Google Drive ordinaire. Il ne peut pas être partagé directement ; ce n'est pas un dossier que vous pourrez parcourir manuellement sur drive.google.com.
+- Le stockage repose sur des documents append-only. Google Drive n'est **pas** une base de données transactionnelle : les accès simultanés, les quotas, les conflits et les délais nécessitent des tests avant un usage institutionnel.
+- La V1.2 ne migre pas automatiquement les données de SQLite, PostgreSQL ni de l'ancienne application. Aucun import n'efface les données précédentes.
+- L'export complet, la restauration testée, le journal de sécurité et la limitation des tentatives de connexion restent à développer.
+- Pour les données réelles d'étudiants, faire approuver la sécurité, la durée de conservation, les sauvegardes, les accès et les exigences légales marocaines avant mise en ligne.
