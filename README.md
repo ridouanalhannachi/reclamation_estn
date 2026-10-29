@@ -84,3 +84,73 @@ Les tests CI s'exécutent également via GitHub Actions sur chaque branche de fo
 - **v1.4 :** statistiques, pagination, export, tableaux de bord avancés.
 
 Workflow : développer chaque évolution sur une branche dédiée, exécuter les tests, ouvrir une PR, intégrer sans écraser les données.
+
+
+---
+
+## Déploiement sur Streamlit Community Cloud (v1.1)
+
+La version Flask reste disponible dans \`app.py\` ; l'interface dédiée à Streamlit se trouve dans **\`streamlit_app.py\`**, avec un backend SQLAlchemy dans \`streamlit_store.py\`. Aucun étudiant, mot de passe ou fichier personnel n'est inclus dans Git.
+
+### 1. Base de données PostgreSQL persistante (obligatoire)
+
+Créez une base PostgreSQL hébergée auprès d'un fournisseur de confiance (par exemple Neon ou Supabase) avant de déployer. Copiez son URL de connexion **avec SSL**. Pour la sécurité des données étudiantes, configurez les sauvegardes et la résidence des données appropriées avec votre établissement.
+
+**Important :** Streamlit Community Cloud peut supprimer les fichiers locaux lors d'un redémarrage ou redéploiement. Il ne faut jamais utiliser SQLite ni stocker des pièces jointes sur disque pour les vraies réclamations sur Community Cloud. Les pièces jointes de cette version Streamlit sont conservées dans PostgreSQL (taille maximale 5 Mo par fichier).
+
+### 2. Installer et déployer depuis GitHub
+
+1. Ouvrir https://share.streamlit.io/ et se connecter au compte GitHub autorisé sur le dépôt privé.
+2. Cliquer sur **Create app** puis **Yup, I have an app**.
+3. Renseigner les champs :
+   - Repository : \`ridouanalhannachi/reclamation_estn\`
+   - Branch : \`main\`
+   - Main file path : \`streamlit_app.py\`
+   - Python : 3.12 (si disponible)
+4. Sous **Advanced settings → Secrets**, ajouter **sans committer dans GitHub** :
+
+   \`\`\`toml
+   DATABASE_URL = "postgresql+psycopg://UTILISATEUR:MOT_DE_PASSE@HOTE:5432/NOM_BD?sslmode=require"
+   BOOTSTRAP_ADMIN_EMAIL = "admin@votre-etablissement.ma"
+   BOOTSTRAP_ADMIN_PASSWORD = "CHOISIR_UN_MOT_DE_PASSE_ALEATOIRE_FORT_DE_20_CARACTERES"
+   \`\`\`
+
+   Ce sont des exemples : remplacer par les vraies valeurs. Les mots de passe contenant des caractères spéciaux doivent être encodés dans l'URL SQL selon les règles d'encodage URL.
+
+5. Cliquer sur **Deploy**. À la première connexion administrateur, le changement du mot de passe temporaire est obligatoire.
+6. Dans **Settings → Sharing**, limiter l'accès aux personnes autorisées pendant les tests. L'application a aussi son propre système de connexion par rôle.
+
+La console Streamlit peut demander d'accorder l'accès au dépôt GitHub privé. Ne rendez pas le dépôt public pour contourner ce problème.
+
+### 3. Synchronisation automatique GitHub → Streamlit
+
+Quand cette PR est fusionnée dans \`main\` et que l'application a été créée sur Community Cloud, les prochains commits sur \`main\` sont automatiquement détectés. Aucun push spécial vers Streamlit n'est nécessaire.
+
+**Attention : synchronisation du code ≠ synchronisation des données.** La base PostgreSQL garde les réclamations indépendamment des commits. Les bases SQLite locales n'ont pas été transférées vers PostgreSQL : si une ancienne installation contient des données réelles, prévoir une migration contrôlée et sauvegardée.
+
+### 4. Tester sur un poste Windows 11
+
+La même URL PostgreSQL peut être passée localement via la variable \`DATABASE_URL\`. Pour expérimenter avec une base SQLite temporaire **uniquement en local** :
+
+\`\`\`powershell
+git clone https://github.com/ridouanalhannachi/reclamation_estn.git
+cd reclamation_estn
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+New-Item -ItemType Directory -Force instance | Out-Null
+$env:DATABASE_URL = "sqlite:///instance/estn.sqlite3"
+$env:ESTN_ALLOW_LOCAL_SQLITE = "1"
+$env:BOOTSTRAP_ADMIN_EMAIL = "admin@example.org"
+$env:BOOTSTRAP_ADMIN_PASSWORD = "Remplacez-Ce-Mot-De-Passe-Long"
+streamlit run streamlit_app.py
+\`\`\`
+
+Ouvrir l'adresse indiquée par Streamlit (en général http://localhost:8501). Le mode local SQLite est une option de développement, pas un mode de production.
+
+### 5. Restrictions de la version
+
+- Première version Streamlit : pas encore de limitation globale des tentatives de connexion, de 2FA, de notifications e-mail ou de procédure administrée de récupération des comptes.
+- Les traitements doivent être testés sur un jeu de données fictives avant d'utiliser des données étudiantes réelles.
+- Les droits de lecture sont vérifiés **dans les requêtes backend**, non seulement par les pages affichées.
+- Avant la production : audits sécurité/confidentialité, supervision, sauvegardes PostgreSQL, politique RGPD/loi marocaine 09-08 et conventions avec le fournisseur d'hébergement.
