@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ claim['subject'] }}{% endblock %}
+{% block content %}
+<div class="breadcrumbs"><a href="{{ url_for('admin' if g.user['role']=='admin' else 'student') }}">Tableau de bord</a> / Réclamation #{{ claim['id'] }}</div>
+<section class="panel content-panel">
+  <div class="claim-heading"><div><div class="eyebrow">RÉCLAMATION #{{ claim['id'] }}</div><h1>{{ claim['subject'] }}</h1>
+  <p class="muted">{{ claim['category'] }} · {{ claim['created_at'] }}</p></div>
+  <span class="badge badge-{{ claim['status']|lower|replace(' ', '-')|replace('é', 'e')|replace('ô', 'o') }}">{{ claim['status'] }}</span></div>
+  {% if g.user['role']=='admin' %}
+  <p class="muted"><strong>Étudiant :</strong> {{ claim['first_name'] }} {{ claim['last_name'] }} · {{ claim['program'] }}</p>
+  {% endif %}
+  <div class="detail-section"><h2>Description</h2><p class="description">{{ claim['description'] }}</p>
+  {% if claim['attachment_path'] %}<p><a class="action-link" href="{{ url_for('attachment', claim_id=claim['id']) }}">Télécharger la pièce jointe : {{ claim['original_filename'] }}</a></p>{% endif %}
+  </div>
+  <div class="detail-section"><h2>Réponse de l'administration</h2>
+  {% if claim['admin_response'] %}<div class="response-box description">{{ claim['admin_response'] }}</div>
+  {% else %}<p class="muted">Aucune réponse pour le moment.</p>{% endif %}</div>
+  {% if g.user['role']=='admin' %}
+  <div class="detail-section administration-response">
+    <h2>Traiter la réclamation</h2>
+    <form method="post" action="{{ url_for('respond', claim_id=claim['id']) }}" class="form-stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>Nouveau statut<select name="status" required>
+        {% for status in statuses %}<option value="{{ status }}" {% if claim['status']==status %}selected{% endif %}>{{ status }}</option>{% endfor %}
+      </select></label>
+      <label>Réponse ou justification<textarea name="response" rows="5" maxlength="5000" placeholder="Précisez la décision ou les prochaines étapes.">{{ claim['admin_response'] }}</textarea>
+      <small>Une décision d'acceptation, de rejet ou de clôture exige au moins 10 caractères.</small></label>
+      <button class="btn primary" type="submit">Enregistrer la décision</button>
+    </form>
+  </div>
+  {% endif %}
+  <div class="detail-section"><h2>Historique</h2><ol class="timeline">
+  {% for item in history %}
+    <li><strong>{{ item['action'] }}</strong><span class="muted">Par {{ item['first_name'] }} {{ item['last_name'] }} · {{ item['created_at'] }}</span>
+    {% if item['note'] %}<p class="description">{{ item['note'] }}</p>{% endif %}</li>
+  {% endfor %}
+  </ol></div>
+</section>
+{% endblock %}
