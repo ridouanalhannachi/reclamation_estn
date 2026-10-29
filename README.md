@@ -154,3 +154,30 @@ Ouvrir l'adresse indiquée par Streamlit (en général http://localhost:8501). L
 - Les traitements doivent être testés sur un jeu de données fictives avant d'utiliser des données étudiantes réelles.
 - Les droits de lecture sont vérifiés **dans les requêtes backend**, non seulement par les pages affichées.
 - Avant la production : audits sécurité/confidentialité, supervision, sauvegardes PostgreSQL, politique RGPD/loi marocaine 09-08 et conventions avec le fournisseur d'hébergement.
+
+### Dépannage : « Impossible de préparer la base PostgreSQL »
+
+À partir du correctif **v1.1.1**, un code court est affiché sans révéler l'URL ou les mots de passe.
+
+| Code | Vérification |
+| --- | --- |
+| `DB-URL` | `DATABASE_URL` complète ; format PostgreSQL ; URL officielle copiée depuis le fournisseur ; caractères spéciaux encodés dans les mots de passe |
+| `DB-AUTH` | Vérifier le nom d'utilisateur et le mot de passe PostgreSQL |
+| `DB-NAME` | Vérifier le nom de la base |
+| `DB-PERM` | Autoriser les opérations `CREATE TABLE` sur le schéma choisi |
+| `DB-NETWORK` / `DB-CONN` | Vérifier l'hôte, le port, la disponibilité de la base et `sslmode=require` |
+| `DB-SLEEP` | Vérifier le démarrage et la disponibilité de la base |
+| `DB-SQL` / `DB-SCHEMA` | Examiner les droits SQL et le schéma (ne pas supprimer les tables existantes) |
+| `DB-OTHER` | Consulter les logs Streamlit sans partager les secrets |
+
+Dans **https://share.streamlit.io → ⋯ → Settings → Secrets**, définir les valeurs à la racine TOML, **sans** en-tête `[connections.*]` :
+
+```toml
+DATABASE_URL = "postgresql://UTILISATEUR:MOT_DE_PASSE@HOTE/NOM_BASE?sslmode=require"
+BOOTSTRAP_ADMIN_EMAIL = "admin@exemple.ma"
+BOOTSTRAP_ADMIN_PASSWORD = "CHOISIR_UN_MOT_DE_PASSE_INITIAL_TRES_FORT"
+```
+
+**Les valeurs ci-dessus sont des exemples qui ne permettent pas de se connecter.** Créer une base PostgreSQL réelle auprès d'un fournisseur, puis utiliser sa chaîne de connexion. Les mots de passe d'administration sont créés seulement à l'initialisation d'une base sans administrateur ; modifier ensuite la variable dans Secrets **ne réinitialise pas** le compte administrateur existant.
+
+Ne jamais poster la vraie chaîne `DATABASE_URL`, une capture de Secrets ou un log contenant des identifiants. Vérifier d'abord les codes sûrs affichés dans l'application.
