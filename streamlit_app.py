@@ -8,6 +8,7 @@ from collections import Counter
 
 import streamlit as st
 
+from cloud_db_diagnostics import DatabaseSetupError, safe_database_diagnostic
 from streamlit_store import (
     CATEGORIES, STATUSES, add_claim, authenticate, bootstrap_admin,
     change_password, claim_detail, get_attachment, get_user, import_students,
@@ -58,9 +59,27 @@ def configuration(name):
 
 @st.cache_resource(show_spinner=False)
 def database_engine(database_url):
-    engine = make_engine(database_url)
-    initialize(engine)
+    try:
+        engine = make_engine(database_url)
+    except Exception as exc:
+        raise DatabaseSetupError("URL de connexion") from exc
+    try:
+        initialize(engine)
+    except Exception as exc:
+        engine.dispose()
+        raise DatabaseSetupError("Connexion et création des tables") from exc
     return engine
+
+
+def display_setup_error(exc, phase):
+    code, message = safe_database_diagnostic(exc)
+    st.error(f"Impossible de préparer la base PostgreSQL ({code}).")
+    st.warning(message)
+    st.caption(
+        f"Étape concernée : {phase}. "
+        "Vérifiez Settings → Secrets dans Streamlit Cloud. "
+        "Ne publiez jamais DATABASE_URL ou vos mots de passe."
+    )
 
 
 database_url = configuration("DATABASE_URL")
@@ -78,13 +97,27 @@ if not database_url.startswith(("postgres://", "postgresql://", "postgresql+psyc
 
 try:
     engine = database_engine(database_url)
-    initial_email = configuration("BOOTSTRAP_ADMIN_EMAIL")
-    initial_password = configuration("BOOTSTRAP_ADMIN_PASSWORD")
-    if initial_email and initial_password:
-        bootstrap_admin(engine, initial_email, initial_password)
-except Exception:
-    st.error("Impossible de préparer la base de données. Vérifiez DATABASE_URL, les permissions et les secrets.")
+except DatabaseSetupError as exc:
+    display_setup_error(exc.__cause__, exc.phase)
     st.stop()
+except Exception as exc:
+    display_setup_error(exc, "Initialisation de la connexion")
+    st.stop()
+
+initial_email = configuration("BOOTSTRAP_ADMIN_EMAIL")
+initial_password = configuration("BOOTSTRAP_ADMIN_PASSWORD")
+if bool(initial_email) != bool(initial_password):
+    st.error(
+        "Configuration administrateur incomplète : fournissez les deux secrets "
+        "BOOTSTRAP_ADMIN_EMAIL et BOOTSTRAP_ADMIN_PASSWORD, ou aucun si le compte existe déjà."
+    )
+    st.stop()
+if initial_email and initial_password:
+    try:
+        bootstrap_admin(engine, initial_email, initial_password)
+    except Exception as exc:
+        display_setup_error(exc, "Initialisation du compte administrateur")
+        st.stop()
 
 
 def reset_session():
