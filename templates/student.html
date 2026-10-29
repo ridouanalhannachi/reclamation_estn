@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Espace étudiant{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><div class="eyebrow">ESPACE ÉTUDIANT</div><h1>Mes réclamations</h1>
+  <p class="muted">Bienvenue {{ g.user['first_name'] }}, retrouvez le suivi de vos demandes.</p></div>
+  <a class="btn primary" href="{{ url_for('new_claim') }}">+ Nouvelle réclamation</a>
+</div>
+{% set soumises = claims|selectattr('status', 'equalto', 'Soumise')|list|length %}
+{% set encours = claims|selectattr('status', 'equalto', 'En cours')|list|length %}
+<div class="metrics">
+  <div class="metric panel"><span>Total</span><strong>{{ claims|length }}</strong><small>Toutes les demandes</small></div>
+  <div class="metric panel"><span>Soumises</span><strong>{{ soumises }}</strong><small>En attente d'examen</small></div>
+  <div class="metric panel"><span>En cours</span><strong>{{ encours }}</strong><small>En traitement</small></div>
+  <div class="metric panel"><span>Traitées</span><strong>{{ claims|length - soumises - encours }}</strong><small>Décision enregistrée</small></div>
+</div>
+<section class="panel table-panel">
+  <div class="section-heading"><h2>Historique des demandes</h2><span class="muted">{{ claims|length }} réclamation(s)</span></div>
+  <div class="table-scroll"><table>
+    <thead><tr><th scope="col">Catégorie</th><th scope="col">Objet</th><th scope="col">Statut</th><th scope="col">Date</th><th scope="col">Action</th></tr></thead>
+    <tbody>
+    {% for claim in claims %}
+      <tr><td>{{ claim['category'] }}</td><td class="subject">{{ claim['subject'] }}</td>
+      <td><span class="badge badge-{{ claim['status']|lower|replace(' ', '-')|replace('é', 'e')|replace('ô', 'o') }}">{{ claim['status'] }}</span></td>
+      <td>{{ claim['created_at'] }}</td><td><a class="action-link" href="{{ url_for('claim_detail', claim_id=claim['id']) }}">Consulter</a></td></tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">Aucune réclamation pour le moment. Vous pouvez déposer votre première demande.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endblock %}
