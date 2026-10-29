@@ -1,0 +1,16 @@
+# Identifiants, données personnelles et fichiers importés
+.env
+.env.*
+!.env.example
+instance/
+*.sqlite3
+*.sqlite
+uploads/
+identifiants-*.csv
+*.pem
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.py[cod]
+.DS_Store

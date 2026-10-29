@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle réclamation{% endblock %}
+{% block content %}
+<div class="breadcrumbs"><a href="{{ url_for('student') }}">Mes réclamations</a> / Nouvelle demande</div>
+<section class="panel content-panel">
+  <div class="eyebrow">NOUVELLE DEMANDE</div><h1>Déposer une réclamation</h1>
+  <p class="muted">Décrivez le problème de façon précise pour faciliter son traitement.</p>
+  <form method="post" enctype="multipart/form-data" class="form-stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Catégorie
+      <select name="category" required><option value="">Sélectionner une catégorie</option>
+      {% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}</select>
+    </label>
+    <label>Objet
+      <input type="text" name="subject" required minlength="4" maxlength="150" placeholder="Ex. : Erreur de note">
+    </label>
+    <label>Description détaillée
+      <textarea name="description" required minlength="10" maxlength="5000" rows="7" placeholder="Expliquez la situation, le lieu et les éléments utiles."></textarea>
+    </label>
+    <label>Pièce jointe (facultative)
+      <input type="file" name="attachment" accept=".pdf,.png,.jpg,.jpeg">
+      <small>PDF, PNG ou JPEG — 5 Mo maximum.</small>
+    </label>
+    <div class="form-actions"><a class="btn subtle" href="{{ url_for('student') }}">Annuler</a>
+    <button class="btn primary" type="submit">Soumettre la réclamation</button></div>
+  </form>
+</section>
+{% endblock %}

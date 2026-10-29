@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Connexion{% endblock %}
+{% block content %}
+<section class="auth-card panel" aria-labelledby="login-heading">
+  <div class="eyebrow">PORTAIL UNIVERSITAIRE</div>
+  <h1 id="login-heading">Bienvenue sur votre espace</h1>
+  <p class="muted">Connectez-vous pour déposer ou suivre vos réclamations.</p>
+  <form method="post" class="form-stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Adresse e-mail institutionnelle <input type="email" name="email" autocomplete="username" required maxlength="200"></label>
+    <label>Mot de passe <input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">Se connecter</button>
+  </form>
+  <p class="helper">Pour obtenir un compte, contactez l'administration de l'établissement.</p>
+</section>
+{% endblock %}
