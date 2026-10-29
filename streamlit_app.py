@@ -82,27 +82,55 @@ def display_setup_error(exc, phase):
     )
 
 
-database_url = configuration("DATABASE_URL")
-if not database_url:
-    st.error("Base de données non configurée. Ajoutez DATABASE_URL dans les secrets de l'application Streamlit Cloud.")
-    st.info("En production, utilisez PostgreSQL externe. Ne stockez pas les réclamations dans un fichier SQLite sur Streamlit Cloud.")
-    st.caption('Définir DATABASE_URL dans Advanced settings → Secrets, à la racine du fichier TOML.')
-    st.stop()
+drive_token = configuration("GDRIVE_TOKEN_B64")
+if drive_token:
+    # Prefer Google Drive when its secret is provided: PostgreSQL is optional.
+    from drive_store import (
+        CATEGORIES, STATUSES, add_claim, authenticate, bootstrap_admin,
+        change_password, claim_detail, get_attachment, get_user, import_students,
+        list_claims, respond,
+    )
+    from drive_store import make_engine as make_drive_store
 
-if not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
-    # Le mode SQLite est réservé au développement local, activé explicitement.
-    if os.getenv("ESTN_ALLOW_LOCAL_SQLITE") != "1" or not database_url.startswith("sqlite:///"):
-        st.error("Base incompatible avec Streamlit Cloud : PostgreSQL est obligatoire en production.")
+    @st.cache_resource(show_spinner=False)
+    def drive_engine(token):
+        return make_drive_store(token)
+
+    try:
+        engine = drive_engine(drive_token)
+    except Exception:
+        st.error(
+            "Connexion Google Drive impossible (GDRIVE-AUTH). "
+            "Un nouveau jeton OAuth avec le scope drive.appdata est nécessaire. "
+            "Vérifiez aussi l'API Google Drive et l'accès au compte."
+        )
+        st.caption(
+            "L'ancien GDRIVE_TOKEN_B64 ne doit pas être réutilisé. "
+            "Ne partagez jamais la valeur du jeton."
+        )
+        st.stop()
+else:
+    database_url = configuration("DATABASE_URL")
+    if not database_url:
+        st.error(
+            "Aucun stockage configuré. Ajoutez un nouveau GDRIVE_TOKEN_B64 "
+            "dans les secrets Streamlit Cloud, ou une URL PostgreSQL DATABASE_URL."
+        )
         st.stop()
 
-try:
-    engine = database_engine(database_url)
-except DatabaseSetupError as exc:
-    display_setup_error(exc.__cause__, exc.phase)
-    st.stop()
-except Exception as exc:
-    display_setup_error(exc, "Initialisation de la connexion")
-    st.stop()
+    if not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+        if os.getenv("ESTN_ALLOW_LOCAL_SQLITE") != "1" or not database_url.startswith("sqlite:///"):
+            st.error("Base incompatible avec Streamlit Cloud : PostgreSQL requis pour ce mode.")
+            st.stop()
+
+    try:
+        engine = database_engine(database_url)
+    except DatabaseSetupError as exc:
+        display_setup_error(exc.__cause__, exc.phase)
+        st.stop()
+    except Exception as exc:
+        display_setup_error(exc, "Initialisation de la connexion")
+        st.stop()
 
 initial_email = configuration("BOOTSTRAP_ADMIN_EMAIL")
 initial_password = configuration("BOOTSTRAP_ADMIN_PASSWORD")
