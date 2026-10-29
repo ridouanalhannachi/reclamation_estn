@@ -19,6 +19,7 @@
         {% else %}
         <a href="{{ url_for('new_claim') }}">Nouvelle réclamation</a>
         {% endif %}
+        <a href="{{ url_for('change_password') }}">Mot de passe</a>
         <form method="post" action="{{ url_for('logout') }}">
           <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
           <button class="nav-logout" type="submit">Déconnexion</button>
