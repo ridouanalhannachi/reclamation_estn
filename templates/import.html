@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Ajouter des étudiants{% endblock %}
+{% block content %}
+<div class="breadcrumbs"><a href="{{ url_for('admin') }}">Administration</a> / Importation</div>
+<section class="panel content-panel">
+  <div class="eyebrow">GESTION DES ÉTUDIANTS</div><h1>Ajouter des étudiants par lots</h1>
+  <p class="muted">Importer plusieurs comptes avec un fichier CSV exporté depuis Excel.</p>
+  <div class="notice"><h2>Colonnes obligatoires du fichier CSV</h2>
+    <p>Le fichier doit contenir les colonnes ci-dessous (UTF-8, première ligne = en-têtes) :</p>
+    <code>num_apogee,nom_etudiant,prenom,email,filiere,niveau</code>
+    <p><strong>Sécurité :</strong> ne mettez aucun mot de passe dans le CSV source. Des mots de passe individuels aléatoires seront générés et téléchargés une seule fois.</p>
+  </div>
+  <form method="post" enctype="multipart/form-data" class="form-stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Fichier CSV <input type="file" name="csv_file" accept=".csv,text/csv" required>
+      <small>Jusqu'à 1000 étudiants par import. Doublons ou données invalides : import intégralement annulé.</small></label>
+    <button class="btn primary" type="submit">Importer les étudiants</button>
+  </form>
+  <div class="detail-section"><h2>Exemple de contenu CSV</h2>
+  <pre class="sample">num_apogee,nom_etudiant,prenom,email,filiere,niveau
+A12345,EL AMRANI,Youssef,youssef@exemple.ma,Génie Informatique,DUT 2
+A12346,BENNANI,Salma,salma@exemple.ma,Réseaux et Télécommunications,DUT 1</pre></div>
+  <p class="helper">Après l'importation, conservez le fichier des identifiants dans un emplacement sécurisé et transmettez chaque mot de passe uniquement à son titulaire.</p>
+</section>
+{% endblock %}
