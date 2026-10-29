@@ -17,3 +17,12 @@ venv/
 # Secrets de déploiement Streamlit Cloud
 .streamlit/secrets.toml
 .streamlit/secrets.*.toml
+# OAuth Google / fichiers de secrets téléchargés
+client_secret*.json
+client_secret*.txt
+credentials.json
+token.json
+gdrive-secrets.toml
+streamlit-secrets.toml
+*oauth-credentials*.json
+
