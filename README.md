@@ -200,37 +200,45 @@ Google Drive remplace PostgreSQL dès que le secret GDRIVE_TOKEN_B64 est présen
 
 **Attention :** une application OAuth « External / Testing » peut délivrer un refresh token qui expire après 7 jours. Pour un service durable, configurer le statut et l'approbation OAuth appropriés selon les règles Google.
 
-### 2. Générer le jeton localement sur Windows 11
+### 2. Générer des valeurs RÉELLES sur votre propre ordinateur (Windows 11)
 
-Dans PowerShell, depuis une copie à jour du dépôt :
+Le fichier `scripts/create_gdrive_token.py` génère désormais **les trois secrets Streamlit** : le nouveau jeton OAuth, l'adresse e-mail choisie par le titulaire et un mot de passe initial aléatoire fort. Aucune valeur secrète n'est envoyée sur GitHub ou dans le chat.
+
+Ouvrir PowerShell (dans le dossier voulu) :
 
 ~~~powershell
-git pull origin main
+git clone https://github.com/ridouanalhannachi/reclamation_estn.git
+cd reclamation_estn
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python scripts/create_gdrive_token.py --client-secret "C:\CHEMIN\PRIVE\client_secret.json"
+python -m pip install -r requirements.txt
+python scripts/create_gdrive_token.py --client-secret "$env:USERPROFILE\Downloads\client_secret.json"
 ~~~
 
-Après autorisation Google dans le navigateur, le script crée un fichier privé hors du dépôt :
+Si le dépôt est déjà téléchargé, remplacer les deux premières commandes par `git pull origin main`. Adapter le nom réel du fichier OAuth téléchargé si différent (par exemple `client_secret_123.apps.googleusercontent.com.json`). Le script demandera **ton adresse e-mail administrateur**, ouvrira Google dans le navigateur, obtiendra le consentement pour drive.appdata et générera un mot de passe temporaire aléatoire.
+
+À la fin, le fichier privé suivant est créé **sur ton PC**, hors du dépôt :
 
 ~~~text
-%USERPROFILE%\reclamation-estn-private\gdrive-secrets.toml
+%USERPROFILE%\reclamation-estn-private\streamlit-secrets.toml
 ~~~
 
-Ce fichier contient la ligne GDRIVE_TOKEN_B64. Le script n'écrase pas un fichier existant.
+Il contient **trois lignes avec les valeurs authentiques**. Les copier intégralement dans Streamlit Cloud. Le script n'affiche pas le mot de passe ni le jeton dans le terminal, et refuse d'écraser un fichier déjà présent.
 
-### 3. Configurer Streamlit Cloud
+### 3. Configurer Streamlit Community Cloud
 
-Ouvrir https://share.streamlit.io → application → ⋯ → Settings → Secrets. Entrer ces valeurs en racine TOML avec des valeurs **réellement nouvelles** :
+1. Ouvrir https://share.streamlit.io/ et choisir l'application Réclamations ESTN.
+2. Aller dans `⋯ → Settings → Secrets` et supprimer les anciens secrets de connexion PostgreSQL / l'ancien jeton exposé.
+3. Coller **exactement le contenu du fichier privé généré** : les clés réelles sont GDRIVE_TOKEN_B64, BOOTSTRAP_ADMIN_EMAIL et BOOTSTRAP_ADMIN_PASSWORD, à la racine TOML.
+4. Cliquer **Save**, puis **Reboot app**.
+5. Se connecter avec l'adresse e-mail indiquée et le mot de passe initial du fichier local ; le changer immédiatement à la première connexion.
 
-~~~toml
-GDRIVE_TOKEN_B64 = "COLLER_LE_NOUVEAU_JETON_BASE64"
-BOOTSTRAP_ADMIN_EMAIL = "admin@exemple.ma"
-BOOTSTRAP_ADMIN_PASSWORD = "CHOISIR_UN_MOT_DE_PASSE_INITIAL_TRES_FORT"
-~~~
+**Paramètres de déploiement réels :**
+- Repository : `ridouanalhannachi/reclamation_estn`
+- Branch : `main`
+- Main file path : `streamlit_app.py`
 
-Enregistrer puis redémarrer l'application. Aucun DATABASE_URL, APP_MODE ou APP_PASSWORD n'est nécessaire ; un ancien DATABASE_URL est ignoré quand GDRIVE_TOKEN_B64 est présent.
+Aucun DATABASE_URL, APP_MODE ou APP_PASSWORD n'est nécessaire en mode Google Drive ; un ancien DATABASE_URL est ignoré quand GDRIVE_TOKEN_B64 est renseigné. Le nom de sous-domaine de Streamlit est à choisir ou à vérifier dans les paramètres de ton application.
 
 Le premier administrateur est créé dans le nouvel espace Google Drive et doit changer son mot de passe à sa première connexion. Les étudiants sont ajoutés par import CSV, chaque compte possédant son propre mot de passe haché.
 
