@@ -4,15 +4,24 @@ Point d'entrée : streamlit_app.py. Définir DATABASE_URL et les secrets de
 bootstrap dans la console Streamlit Cloud, jamais dans le dépôt GitHub.
 """
 import os
+import time
+from security_controls import session_expired, audit_event
 from collections import Counter
 
 import streamlit as st
+from student_admin_ui import render_import, render_students
+from administrative_ui import render_administrative_dashboard, render_administrative_actions
+from administrative_services import request_complement, respond_complement
+from account_admin_ui import ROLE_LABELS, render_accounts
+from department_dashboard import render_department_dashboard
+from access_control import has_permission
 
 from cloud_db_diagnostics import DatabaseSetupError, safe_database_diagnostic
 from streamlit_store import (
     CATEGORIES, STATUSES, add_claim, authenticate, bootstrap_admin,
     change_password, claim_detail, get_attachment, get_user, import_students,
     initialize, list_claims, make_engine, respond,
+    preview_students, list_students, update_student,
 )
 
 st.set_page_config(
@@ -88,7 +97,7 @@ if drive_token:
     from drive_store import (
         CATEGORIES, STATUSES, add_claim, authenticate, bootstrap_admin,
         change_password, claim_detail, get_attachment, get_user, import_students,
-        list_claims, respond,
+        list_claims, respond, preview_students, list_students, update_student,
     )
     from drive_store import make_engine as make_drive_store
 
@@ -148,8 +157,18 @@ if initial_email and initial_password:
         st.stop()
 
 
+def can_actor_permission(permission):
+    if isinstance(engine, type(None)) or hasattr(engine, "read_appdata"):
+        return False
+    with engine.connect() as conn:
+        return has_permission(conn, user_id, permission)
+
+
 def reset_session():
     st.session_state.pop("uid", None)
+    st.session_state.pop("auth_at", None)
+    st.session_state.pop("last_seen", None)
+    st.session_state.pop("permission_version", None)
     st.session_state.pop("csv_credentials", None)
     st.session_state.pop("selected_claim", None)
 
@@ -173,13 +192,22 @@ def display_login():
                 else:
                     reset_session()
                     st.session_state["uid"] = user["id"]
+                    st.session_state["permission_version"] = user.get("permission_version", 0)
+                    st.session_state["auth_at"] = st.session_state["last_seen"] = time.time()
                     st.rerun()
             st.caption("Vous n'avez pas de compte ? Contactez l'administration de l'établissement.")
     st.stop()
 
 
 user_id = st.session_state.get("uid")
-if not user_id:
+if user_id:
+    if session_expired(st.session_state.get("auth_at"), st.session_state.get("last_seen")):
+        audit_event("session_expired", user_id)
+        reset_session()
+        st.warning("Session expirée. Veuillez vous reconnecter.")
+        st.stop()
+    st.session_state["last_seen"] = time.time()
+else:
     display_login()
 
 try:
@@ -192,6 +220,11 @@ except Exception:
 if not user:
     reset_session()
     st.rerun()
+if st.session_state.get("permission_version") != user.get("permission_version", 0):
+    audit_event("session_permissions_revoked", user_id)
+    reset_session()
+    st.warning("Vos permissions ont changé. Veuillez vous reconnecter.")
+    st.stop()
 
 
 def display_password_change():
@@ -212,7 +245,9 @@ def display_password_change():
             except ValueError as exc:
                 st.error(str(exc))
             else:
-                st.success("Mot de passe modifié.")
+                audit_event("password_changed", user_id)
+                reset_session()
+                st.success("Mot de passe modifié. Reconnectez-vous.")
                 st.rerun()
     if st.button("Se déconnecter"):
         reset_session()
@@ -226,10 +261,14 @@ if user["password_change_required"]:
 with st.sidebar:
     st.markdown("### 🎓 Réclamations ESTN")
     st.caption(f"{user['first_name']} {user['last_name']}")
-    st.caption("Administration générale" if user["role"] == "admin" else "Espace étudiant")
+    st.caption(ROLE_LABELS.get(user["role"], "Rôle utilisateur") if user["role"] != "student" else "Espace étudiant")
     st.divider()
-    if user["role"] == "admin":
-        page = st.radio("Navigation", ["Tableau de bord", "Ajouter des étudiants", "Mon compte"])
+    privileged = user["role"] in ("admin", "super_admin", "department_head", "program_manager", "administrative_agent")
+    if user["role"] in ("admin", "super_admin"):
+        items = ["Tableau de bord", "Traitement administratif", "Ajouter des étudiants", "Gestion des étudiants", "Comptes et permissions", "Mon compte"]
+        page = st.radio("Navigation", items)
+    elif privileged:
+        page = st.radio("Navigation", ["Département / filière", "Traitement administratif", "Mon compte"])
     else:
         page = st.radio("Navigation", ["Mes réclamations", "Nouvelle réclamation", "Mon compte"])
     st.divider()
@@ -291,7 +330,7 @@ def render_detail():
     st.title(c["subject"])
     st.caption(f"#{c['id']} · {c['category']} · {c['created_at']}")
     st.info(f"Statut actuel : {c['status']}")
-    if user["role"] == "admin":
+    if user["role"] != "student":
         st.write(f"**Étudiant :** {c['student_name']} · {c['program']}")
     with st.container(border=True):
         st.subheader("Description")
@@ -308,9 +347,27 @@ def render_detail():
     with st.container(border=True):
         st.subheader("Réponse de l'administration")
         st.write(c["admin_response"] or "Aucune réponse pour le moment.")
-    if user["role"] == "admin":
+    if user["role"] == "student" and c["status"] == "En attente de complément":
+        with st.form(f"complement_{claim_id}"):
+            st.subheader("Complément demandé")
+            response_text = st.text_area("Votre réponse", max_chars=5000)
+            complement_file = st.file_uploader("Document facultatif", type=["pdf", "png", "jpg", "jpeg"])
+            send = st.form_submit_button("Envoyer le complément", type="primary")
+        if send:
+            try:
+                mime = complement_file.type if complement_file else None
+                respond_complement(engine, user_id, claim_id, response_text,
+                                   complement_file.name if complement_file else None, mime,
+                                   complement_file.getvalue() if complement_file else None)
+            except (ValueError, PermissionError, LookupError) as exc:
+                st.error(str(exc))
+            else:
+                st.success("Complément envoyé. La réclamation est retournée au traitement.")
+                st.rerun()
+    if can_actor_permission("claims.change_status"):
+        render_administrative_actions(engine, user_id, claim_id, c["status"])
         with st.form(f"respond_{claim_id}"):
-            st.subheader("Traiter la réclamation")
+            st.subheader("Réponse générale")
             status = st.selectbox("Nouveau statut", STATUSES, index=STATUSES.index(c["status"]))
             text = st.text_area("Réponse / justification", value=c["admin_response"], max_chars=5000, height=130)
             submit = st.form_submit_button("Enregistrer la décision", type="primary")
@@ -350,7 +407,10 @@ if page == "Mon compte":
             except ValueError as exc:
                 st.error(str(exc))
             else:
-                st.success("Mot de passe changé.")
+                audit_event("password_changed", user_id)
+                reset_session()
+                st.success("Mot de passe changé. Reconnectez-vous.")
+                st.rerun()
     st.stop()
 
 if user["role"] == "student":
@@ -384,35 +444,16 @@ if user["role"] == "student":
             st.subheader("Historique des demandes")
             render_list(claims)
 else:
-    if page == "Ajouter des étudiants":
-        st.markdown('<div class="brand">ADMINISTRATION GÉNÉRALE</div>', unsafe_allow_html=True)
-        st.title("Ajouter des étudiants par lots")
-        st.write("Importer un fichier CSV UTF-8 contenant les colonnes :")
-        st.code("num_apogee,nom_etudiant,prenom,email,filiere,niveau", language="text")
-        st.warning("N'importez jamais de mots de passe en clair. Les identifiants temporaires sont générés individuellement.")
-        with st.form("csv_import"):
-            csv_file = st.file_uploader("Fichier CSV", type=["csv"])
-            submit = st.form_submit_button("Importer les étudiants", type="primary")
-        if submit:
-            if not csv_file:
-                st.error("Sélectionnez un fichier CSV.")
-            else:
-                try:
-                    csv_text = csv_file.getvalue().decode("utf-8-sig")
-                    export_csv = import_students(engine, user_id, csv_text)
-                except (UnicodeError, ValueError, PermissionError) as exc:
-                    st.error(f"Import annulé : {exc}")
-                else:
-                    st.session_state["csv_credentials"] = export_csv
-                    st.success("Étudiants importés. Téléchargez immédiatement les identifiants.")
-        if st.session_state.get("csv_credentials"):
-            st.download_button(
-                "Télécharger les identifiants temporaires (confidentiel)",
-                st.session_state["csv_credentials"],
-                file_name="identifiants-etudiants.csv", mime="text/csv",
-                type="primary",
-            )
-            st.caption("Le fichier contient des secrets : ne le publiez jamais sur GitHub.")
+    if page == "Comptes et permissions":
+        render_accounts(engine, user_id)
+    elif page == "Département / filière":
+        render_department_dashboard(engine, user_id)
+    elif page == "Ajouter des étudiants":
+        render_import(engine, user_id, import_students, preview_students)
+    elif page == "Gestion des étudiants":
+        render_students(engine, user_id, list_students, update_student)
+    elif page == "Traitement administratif":
+        render_administrative_dashboard(engine, user_id, [], respond)
     else:
         if not render_detail():
             st.markdown('<div class="brand">ADMINISTRATION GÉNÉRALE</div>', unsafe_allow_html=True)

@@ -85,6 +85,58 @@ Les tests CI s'exécutent également via GitHub Actions sur chaque branche de fo
 
 Workflow : développer chaque évolution sur une branche dédiée, exécuter les tests, ouvrir une PR, intégrer sans écraser les données.
 
+## Patch v1.6.0 — Traitement administratif avancé
+
+Cette version ajoute les modules SQL v1.6 sans réécrire les écrans existants :
+
+- affectation et réaffectation historisées des réclamations ;
+- services configurables, priorité, responsable et date limite ;
+- workflow backend explicite, validations de transition et audit UTC ;
+- demandes de complément et réponses étudiant protégées par le propriétaire ;
+- indicateurs de délai, échéances proches et dossiers en retard ;
+- tableau « Traitement administratif » dans Streamlit pour SQLite/PostgreSQL.
+
+### Compatibilité des stockages
+
+SQLite et PostgreSQL utilisent des migrations additives et répétables. Google Drive conserve son modèle append-only : les affectations structurées SQL ne sont pas annoncées compatibles tant qu'un modèle d'événements v1.6 dédié n'est pas ajouté. L'application affiche cette limite clairement.
+
+### Installation Windows et test SQLite local
+
+```powershell
+cd C:\Users\PC\reclamation_estn
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+$env:DATABASE_URL = "sqlite:///instance/estn.sqlite3"
+$env:ESTN_ALLOW_LOCAL_SQLITE = "1"
+python -m compileall -q .
+python -m unittest discover -s tests -v
+git diff --check
+python -m streamlit run streamlit_app.py
+```
+
+La migration crée uniquement les tables et colonnes absentes. Elle ne supprime ni ne réécrit les utilisateurs, réclamations, pièces jointes ou historiques.
+
+### Retour arrière
+
+1. Arrêter Streamlit.
+2. Restaurer une sauvegarde récente uniquement si une anomalie impose un retour arrière ; ne jamais utiliser `git reset --hard` sur une installation contenant des données locales.
+3. Conserver une copie SQLite avant toute migration et restaurer le code depuis Git séparément.
+4. Conserver les lignes d'historique et les tables v1.6 : elles ne doivent pas être supprimées même après retour arrière du code.
+
+## Patch v1.7.0 — Comptes, rôles et permissions
+
+La version v1.7.0 ajoute des rôles compatibles, des affectations par département et filière, et des permissions RBAC contrôlées par le backend SQL. Les comptes responsables utilisent un mot de passe temporaire fort, haché, avec changement obligatoire à la première connexion. La rubrique **Comptes et permissions** permet aux administrateurs habilités de gérer les rôles, périmètres, permissions et leur historique.
+
+Les migrations v1.7 sont additives. Les anciennes réclamations restent conservées et sont placées en triage tant que leur département responsable n'est pas vérifié. Le stockage Google Drive reste append-only et ne prétend pas fournir les transactions ou les migrations SQL de la couche SQLite/PostgreSQL.
+
+```powershell
+$env:DATABASE_URL = "sqlite:///instance/estn.sqlite3"
+$env:ESTN_ALLOW_LOCAL_SQLITE = "1"
+python -m compileall -q .
+python -m unittest discover -s tests -v
+git diff --check
+python -m streamlit run streamlit_app.py
+```
 
 ---
 

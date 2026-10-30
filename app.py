@@ -9,6 +9,8 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from functools import wraps
+import time
+from security_controls import ProcessLoginLimiter, session_expired, audit_event
 from pathlib import Path
 
 import click
@@ -33,7 +35,8 @@ CREATE TABLE IF NOT EXISTS users (
     level TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     password_change_required INTEGER NOT NULL DEFAULT 0,
-    role TEXT NOT NULL CHECK(role IN ('student', 'admin'))
+    role TEXT NOT NULL CHECK(role IN ('student', 'admin')),
+    is_active INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS claims (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +90,9 @@ def login_required(role=None):
             if g.user is None:
                 return redirect(url_for("login"))
             if role is not None and g.user["role"] != role:
+                audit_event("forbidden_role", g.user["id"], request.path)
                 abort(403)
+            audit_event("route_access", g.user["id"], request.endpoint)
             return view(*args, **kwargs)
         return wrapped
     return decorator
@@ -122,6 +127,7 @@ def create_app(test_config=None):
     )
     if test_config:
         app.config.update(test_config)
+    app.extensions["estn_limiter"] = ProcessLoginLimiter()
     if not app.config["SECRET_KEY"]:
         raise RuntimeError("Définir ESTN_SECRET_KEY (32 octets aléatoires minimum).")
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
@@ -137,14 +143,21 @@ def create_app(test_config=None):
     def auth_and_csrf():
         g.user = None
         if session.get("user_id"):
+            now = time.time()
+            if session_expired(session.get("auth_at"), session.get("last_seen"), now):
+                session.clear()
+            else:
+                session["last_seen"] = now
+        if session.get("user_id"):
             try:
                 g.user = db().execute(
                     "SELECT * FROM users WHERE id = ?", (session["user_id"],)
                 ).fetchone()
             except sqlite3.OperationalError:
                 g.user = None
-            if g.user is None:
+            if g.user is None or ("is_active" in g.user.keys() and not g.user["is_active"]):
                 session.clear()
+                g.user = None
         if request.method == "POST":
             expected = session.get("_csrf", "")
             submitted = request.form.get("_csrf", "")
@@ -173,6 +186,9 @@ def create_app(test_config=None):
     @app.cli.command("init-db")
     def init_db_command():
         db().executescript(SCHEMA)
+        columns = {row["name"] for row in db().execute("PRAGMA table_info(users)")}
+        if "is_active" not in columns:
+            db().execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
         db().commit()
         click.echo("Base de données initialisée.")
 
@@ -203,10 +219,20 @@ def create_app(test_config=None):
         if request.method == "POST":
             email = request.form.get("email", "").strip().lower()
             password = request.form.get("password", "")
+            limiter = current_app.extensions["estn_limiter"]
+            if not limiter.allowed(email):
+                audit_event("login_limited", email)
+                flash("Trop de tentatives. Réessayez dans 15 minutes.", "error")
+                return render_template("login.html"), 429
             user = db().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-            if user and check_password_hash(user["password_hash"], password):
+            valid = bool(user and ("is_active" not in user.keys() or user["is_active"])
+                         and check_password_hash(user["password_hash"], password))
+            limiter.record(email, valid)
+            audit_event("login_success" if valid else "login_failed", email)
+            if valid:
                 session.clear()
                 session["user_id"] = user["id"]
+                session["auth_at"] = session["last_seen"] = time.time()
                 session.permanent = False
                 csrf_token()
                 return redirect(url_for("change_password") if user["password_change_required"] else url_for("index"))

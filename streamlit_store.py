@@ -16,11 +16,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker
+from security_controls import identity_key, is_limited, audit_event, WINDOW_SECONDS
+import time
 from werkzeug.security import check_password_hash, generate_password_hash
+from student_management import parse_csv_preview, normalize_profile, public_student
+from sqlalchemy import inspect, text
+from administrative_services import initialize_administrative_schema
+from administrative_workflow import validate_transition, append_status_history
+from department_management import initialize_departments
+from account_management import initialize_account_schema
+from permission_management import initialize_permission_schema
+from access_control import PERMISSIONS, ROLES, require_claim_access
 
 Base = declarative_base()
-STATUSES = ("Soumise", "En cours", "Acceptée", "Rejetée", "Clôturée")
-CATEGORIES = ("Pédagogique", "Technique", "Administrative", "Autre")
+STATUSES = ("Soumise", "Affectée", "En cours", "En attente de complément", "Complément reçu", "Résolue", "Acceptée", "Rejetée", "Clôturée")
+CATEGORIES = ("Pédagogique", "Pédagogique - Contestation de note", "Technique", "Administrative", "Autre")
 CSV_COLUMNS = ("num_apogee", "nom_etudiant", "prenom", "email", "filiere", "niveau")
 ALLOWED_EXTENSIONS = {".pdf": "application/pdf", ".png": "image/png",
                       ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
@@ -43,6 +53,8 @@ class User(Base):
     password_hash = Column(Text, nullable=False)
     password_change_required = Column(Integer, nullable=False, default=0)
     role = Column(String(20), nullable=False)
+    is_active = Column(Integer, nullable=False, default=1, server_default="1")
+    permission_version = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class Claim(Base):
@@ -58,6 +70,10 @@ class Claim(Base):
     original_filename = Column(String(200))
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
+    student_department_id = Column(Integer)
+    responsible_department_id = Column(Integer)
+    responsible_program_id = Column(Integer)
+    is_grade_complaint = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ClaimEvent(Base):
@@ -79,6 +95,36 @@ class ClaimAttachment(Base):
     payload = Column(LargeBinary, nullable=False)
 
 
+class AuthAudit(Base):
+    __tablename__ = "auth_audit"
+    id = Column(Integer, primary_key=True)
+    identity = Column(String(64), nullable=False, index=True)
+    action = Column(String(16), nullable=False)
+    at = Column(Integer, nullable=False, index=True)
+
+
+def _security_login(engine, email, password):
+    """Persist failures/success; rate-limit before checking credentials."""
+    normalized = (email or "").strip().lower()
+    key = identity_key(normalized)
+    now = int(time.time())
+    with _session(engine) as s:
+        with s.begin():
+            rows = s.execute(select(AuthAudit.at, AuthAudit.action).where(
+                AuthAudit.identity == key,
+                AuthAudit.at >= now - WINDOW_SECONDS,
+            ).order_by(AuthAudit.id)).all()
+            if is_limited(rows, now=now):
+                s.add(AuthAudit(identity=key, action="limited", at=now))
+                audit_event("login_limited", normalized)
+                return None
+            user = s.scalar(select(User).where(User.email == normalized))
+            success = bool(user and user.is_active and check_password_hash(user.password_hash, password))
+            s.add(AuthAudit(identity=key, action="success" if success else "failed", at=now))
+            audit_event("login_success" if success else "login_failed", normalized)
+            return public_user(user) if success else None
+
+
 def make_engine(database_url):
     if not database_url:
         raise ValueError("DATABASE_URL est obligatoire.")
@@ -94,6 +140,32 @@ def make_engine(database_url):
 
 def initialize(engine):
     Base.metadata.create_all(engine)
+    # Non-destructive: existing accounts and claims are preserved.
+    columns = {col["name"] for col in inspect(engine).get_columns("users")}
+    if "is_active" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+            ))
+    initialize_administrative_schema(engine)
+    initialize_departments(engine)
+    initialize_account_schema(engine)
+    initialize_permission_schema(engine)
+    claim_columns = {
+        "student_department_id": "INTEGER",
+        "responsible_department_id": "INTEGER",
+        "responsible_program_id": "INTEGER",
+        "is_grade_complaint": "INTEGER DEFAULT 0",
+    }
+    existing_claim_columns = {col["name"] for col in inspect(engine).get_columns("claims")}
+    with engine.begin() as connection:
+        for name, definition in claim_columns.items():
+            if name not in existing_claim_columns:
+                connection.execute(text(f"ALTER TABLE claims ADD COLUMN {name} {definition}"))
+    user_columns = {col["name"] for col in inspect(engine).get_columns("users")}
+    with engine.begin() as connection:
+        if "permission_version" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN permission_version INTEGER NOT NULL DEFAULT 0"))
 
 
 def _session(engine):
@@ -103,24 +175,22 @@ def _session(engine):
 def public_user(user):
     return {
         "id": user.id, "email": user.email, "role": user.role,
+        "permission_version": getattr(user, "permission_version", 0) or 0,
         "first_name": user.first_name, "last_name": user.last_name,
         "program": user.program, "level": user.level,
         "password_change_required": bool(user.password_change_required),
+        "is_active": bool(user.is_active),
     }
 
 
 def get_user(engine, user_id):
     with _session(engine) as s:
         user = s.get(User, user_id)
-        return public_user(user) if user is not None else None
+        return public_user(user) if user is not None and user.is_active else None
 
 
 def authenticate(engine, email, password):
-    with _session(engine) as s:
-        user = s.scalar(select(User).where(User.email == email.strip().lower()))
-        if not user or not check_password_hash(user.password_hash, password):
-            return None
-        return public_user(user)
+    return _security_login(engine, email, password)
 
 
 def bootstrap_admin(engine, email, password):
@@ -146,8 +216,8 @@ def change_password(engine, user_id, current_password, new_password):
         raise ValueError("Le nouveau mot de passe doit être différent et contenir 12 caractères minimum.")
     with _session(engine) as s:
         with s.begin():
-            user = s.get(User, user_id)
-            if not user or not check_password_hash(user.password_hash, current_password):
+            user = _require_user(s, user_id)
+            if not check_password_hash(user.password_hash, current_password):
                 raise ValueError("Mot de passe actuel incorrect.")
             user.password_hash = generate_password_hash(new_password)
             user.password_change_required = 0
@@ -155,7 +225,7 @@ def change_password(engine, user_id, current_password, new_password):
 
 def _require_user(s, user_id, role=None):
     user = s.get(User, user_id)
-    if not user or (role and user.role != role):
+    if not user or not user.is_active or (role and user.role != role):
         raise PermissionError("Accès interdit.")
     return user
 
@@ -193,6 +263,7 @@ def add_claim(engine, student_id, category, subject, description, filename=None,
                 description=description, status="Soumise", admin_response="",
                 created_at=time, updated_at=time,
                 original_filename=Path(filename).name[:200] if filename else None,
+                is_grade_complaint=int(category == "Pédagogique - Contestation de note"),
             )
             s.add(claim)
             s.flush()
@@ -214,25 +285,33 @@ def claim_dict(claim, student=None):
         "admin_response": claim.admin_response or "",
         "original_filename": claim.original_filename,
         "created_at": claim.created_at, "updated_at": claim.updated_at,
+        "student_department_id": getattr(claim, "student_department_id", None),
+        "responsible_department_id": getattr(claim, "responsible_department_id", None),
+        "responsible_program_id": getattr(claim, "responsible_program_id", None),
+        "is_grade_complaint": bool(getattr(claim, "is_grade_complaint", 0)),
         "student_name": (student.first_name + " " + student.last_name) if student else "",
         "program": student.program if student else "",
     }
 
 
 def list_claims(engine, user_id, category=None, status=None):
+    from access_control import can_view_claim
     with _session(engine) as s:
         user = _require_user(s, user_id)
         stmt = select(Claim, User).join(User, Claim.student_id == User.id)
-        if user.role == "student":
-            stmt = stmt.where(Claim.student_id == user_id)
-        elif user.role != "admin":
-            raise PermissionError("Rôle non autorisé.")
         if category in CATEGORIES:
             stmt = stmt.where(Claim.category == category)
         if status in STATUSES:
             stmt = stmt.where(Claim.status == status)
         stmt = stmt.order_by(Claim.id.desc())
-        return [claim_dict(claim, student) for claim, student in s.execute(stmt).all()]
+        records = s.execute(stmt).all()
+        connection = s.connection()
+        allowed = []
+        for claim, student in records:
+            details = claim_dict(claim, student)
+            if can_view_claim(connection, user_id, details):
+                allowed.append(details)
+        return allowed
 
 
 def claim_detail(engine, user_id, claim_id):
@@ -245,8 +324,12 @@ def claim_detail(engine, user_id, claim_id):
         if record is None:
             raise LookupError("Réclamation introuvable.")
         claim, student = record
-        if user.role != "admin" and claim.student_id != user_id:
+        if user.role == "student" and claim.student_id != user_id:
+            audit_event("claim_access_denied", user_id, claim_id)
             raise PermissionError("Cette réclamation appartient à un autre étudiant.")
+        if user.role not in ("admin", "super_admin"):
+            require_claim_access(s.connection(), user_id, claim_dict(claim, student))
+        audit_event("claim_view", user_id, claim_id)
         events = s.execute(
             select(ClaimEvent, User).join(User, ClaimEvent.actor_id == User.id)
             .where(ClaimEvent.claim_id == claim_id).order_by(ClaimEvent.id.desc())
@@ -270,8 +353,10 @@ def get_attachment(engine, user_id, claim_id):
         claim = s.get(Claim, claim_id)
         if not claim:
             raise LookupError("Réclamation introuvable.")
-        if user.role != "admin" and claim.student_id != user_id:
-            raise PermissionError("Pièce jointe privée.")
+        if user.role != "admin":
+            student = s.get(User, claim.student_id)
+            require_claim_access(s.connection(), user_id, claim_dict(claim, student))
+        audit_event("attachment_access", user_id, claim_id)
         attachment = s.scalar(
             select(ClaimAttachment).where(ClaimAttachment.claim_id == claim_id)
         )
@@ -288,11 +373,16 @@ def respond(engine, admin_id, claim_id, status, response):
         raise ValueError("Une décision exige une réponse motivée d'au moins 10 caractères.")
     with _session(engine) as s:
         with s.begin():
-            _require_user(s, admin_id, "admin")
+            actor = _require_user(s, admin_id)
+            if actor.role == "student":
+                raise PermissionError("Seul un utilisateur habilité peut traiter une réclamation.")
             claim = s.get(Claim, claim_id)
             if claim is None:
                 raise LookupError("Réclamation introuvable.")
+            require_claim_access(s.connection(), admin_id, claim_dict(claim, s.get(User, claim.student_id)))
             when = now_utc()
+            validate_transition(claim.status, status, response, is_admin=True, is_assignee=True)
+            old_status = claim.status
             claim.status = status
             claim.admin_response = response
             claim.updated_at = when
@@ -300,6 +390,12 @@ def respond(engine, admin_id, claim_id, status, response):
                 claim_id=claim_id, actor_id=admin_id,
                 action="Statut : " + status, note=response, created_at=when,
             ))
+            append_status_history(s, claim_id, admin_id, old_status, status, response, when)
+            if status in ("Résolue", "Acceptée", "Rejetée", "Clôturée"):
+                # Extended deadline metadata is additive and may be absent on older rows.
+                columns = {c["name"] for c in inspect(s.get_bind()).get_columns("claims")}
+                if "resolved_at" in columns:
+                    s.execute(text("UPDATE claims SET resolved_at=:at WHERE id=:id"), {"at": when, "id": claim_id})
 
 
 def import_students(engine, admin_id, csv_text):
@@ -356,3 +452,65 @@ def import_students(engine, admin_id, csv_text):
     except IntegrityError as exc:
         raise ValueError("Un numéro APOGÉE ou e-mail existe déjà.") from exc
     return output.getvalue()
+
+
+def preview_students(engine, admin_id, csv_text):
+    rows, issues = parse_csv_preview(csv_text)
+    with _session(engine) as s:
+        _require_user(s, admin_id, "admin")
+        emails = {u for (u,) in s.execute(select(User.email)).all()}
+        numbers = {u for (u,) in s.execute(select(User.student_number)).all()}
+    for idx, row in enumerate(rows, 2):
+        if row["email"] in emails or row["num_apogee"] in numbers:
+            issues.append(f"Ligne {idx} : compte déjà enregistré (e-mail ou APOGÉE).")
+    return {"rows": rows, "issues": issues}
+
+
+def list_students(engine, admin_id, search="", program="", level="", active="Tous"):
+    with _session(engine) as s:
+        _require_user(s, admin_id, "admin")
+        stmt = select(User).where(User.role == "student")
+        if search:
+            term = search.strip().lower()
+            stmt = stmt.where(
+                func.lower(User.student_number).contains(term, autoescape=True) |
+                func.lower(User.last_name).contains(term, autoescape=True) |
+                func.lower(User.first_name).contains(term, autoescape=True) |
+                func.lower(User.email).contains(term, autoescape=True)
+            )
+        if program:
+            stmt = stmt.where(func.lower(User.program).contains(program.strip().lower()))
+        if level:
+            stmt = stmt.where(func.lower(User.level).contains(level.strip().lower()))
+        if active == "Actifs":
+            stmt = stmt.where(User.is_active == 1)
+        elif active == "Inactifs":
+            stmt = stmt.where(User.is_active == 0)
+        return [public_student({
+            "id": u.id, "student_number": u.student_number,
+            "last_name": u.last_name, "first_name": u.first_name,
+            "email": u.email, "program": u.program, "level": u.level,
+            "is_active": bool(u.is_active),
+        }) for u in s.scalars(stmt.order_by(User.id).limit(500))]
+
+
+def update_student(engine, admin_id, student_id, updates):
+    clean = normalize_profile(updates)
+    try:
+        with _session(engine) as s:
+            with s.begin():
+                _require_user(s, admin_id, "admin")
+                target = s.get(User, student_id)
+                if target is None or target.role != "student":
+                    raise LookupError("Étudiant introuvable.")
+                if "email" in clean and s.scalar(select(User.id).where(
+                    User.email == clean["email"], User.id != target.id)):
+                    raise ValueError("E-mail déjà utilisé.")
+                if "student_number" in clean and s.scalar(select(User.id).where(
+                    User.student_number == clean["student_number"], User.id != target.id)):
+                    raise ValueError("Numéro APOGÉE déjà utilisé.")
+                for name, value in clean.items():
+                    setattr(target, name, int(value) if name == "is_active" else value)
+    except IntegrityError as exc:
+        raise ValueError("E-mail ou numéro APOGÉE déjà utilisé.") from exc
+    audit_event("student_profile_updated", admin_id, student_id)

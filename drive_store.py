@@ -24,6 +24,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from werkzeug.security import check_password_hash, generate_password_hash
+from student_management import parse_csv_preview, normalize_profile, public_student
+from security_controls import identity_key, is_limited, audit_event, WINDOW_SECONDS
 
 SCOPE = "https://www.googleapis.com/auth/drive.appdata"
 PREFIX = "estn_v2_"
@@ -56,10 +58,13 @@ def _validate_file(filename, payload):
 
 
 def _public_user(u):
-    return {key: u[key] for key in (
+    result = {key: u[key] for key in (
         "id", "email", "role", "first_name", "last_name",
         "program", "level", "password_change_required",
     )}
+    result["is_active"] = u.get("is_active", True)
+    result["permission_version"] = u.get("permission_version", 0)
+    return result
 
 
 class DriveStore:
@@ -135,25 +140,48 @@ class DriveStore:
             if record["user_id"] in users:
                 users[record["user_id"]]["password_hash"] = record["password_hash"]
                 users[record["user_id"]]["password_change_required"] = False
+        for file in sorted(self._files("student_update_", files), key=lambda f: f["name"]):
+            revision = self._read(file["id"])
+            if revision.get("user_id") in users and users[revision["user_id"]]["role"] == "student":
+                users[revision["user_id"]].update(revision["updates"])
+        for user in users.values():
+            user.setdefault("is_active", True)
         return users
 
     def _user(self, user_id, role=None, users=None):
         users = self._users() if users is None else users
         u = users.get(user_id)
-        if u is None or (role and u["role"] != role):
+        if u is None or not u.get("is_active", True) or (role and u["role"] != role):
             raise PermissionError("Accès interdit.")
         return u
 
     def get_user(self, user_id):
         u = self._users().get(user_id)
-        return _public_user(u) if u else None
+        return _public_user(u) if u and u.get("is_active", True) else None
 
     def authenticate(self, email, password):
         email = (email or "").strip().lower()
-        for user in self._users().values():
-            if user["email"] == email and check_password_hash(user["password_hash"], password):
-                return _public_user(user)
-        return None
+        key = identity_key(email)
+        now = time.time()
+        with self._lock:
+            recent = []
+            for file in sorted(self._files("auth_"), key=lambda f: f["name"]):
+                event = self._read(file["id"])
+                if event.get("identity") == key and event.get("at", 0) >= now - WINDOW_SECONDS:
+                    recent.append((event["at"], event["action"]))
+            if is_limited(recent, now=now):
+                self._write("auth", {"identity": key, "action": "limited", "at": now})
+                audit_event("login_limited", email)
+                return None
+            for user in self._users().values():
+                if (user["email"] == email and user.get("is_active", True)
+                        and check_password_hash(user["password_hash"], password)):
+                    self._write("auth", {"identity": key, "action": "success", "at": now})
+                    audit_event("login_success", email)
+                    return _public_user(user)
+            self._write("auth", {"identity": key, "action": "failed", "at": now})
+            audit_event("login_failed", email)
+            return None
 
     def bootstrap_admin(self, email, password):
         email = (email or "").strip().lower()
@@ -249,7 +277,9 @@ class DriveStore:
         if not claim:
             raise LookupError("Réclamation introuvable.")
         if actor["role"] != "admin" and claim["student_id"] != user_id:
+            audit_event("claim_access_denied", user_id, claim_id)
             raise PermissionError("Réclamation privée.")
+        audit_event("claim_view", user_id, claim_id)
         return claim
 
     def claim_detail(self, user_id, claim_id):
@@ -360,6 +390,57 @@ class DriveStore:
             self._write("users", {"users": users})
             return output.getvalue()
 
+    def preview_students(self, admin_id, csv_text):
+        rows, issues = parse_csv_preview(csv_text)
+        with self._lock:
+            self._user(admin_id, "admin")
+            users = list(self._users().values())
+            emails = {u["email"] for u in users}
+            numbers = {u.get("student_number") for u in users}
+            for idx, row in enumerate(rows, 2):
+                if row["email"] in emails or row["num_apogee"] in numbers:
+                    issues.append(f"Ligne {idx} : compte déjà enregistré (e-mail ou APOGÉE).")
+        return {"rows": rows, "issues": issues}
+
+    def list_students(self, admin_id, search="", program="", level="", active="Tous"):
+        users = self._users()
+        self._user(admin_id, "admin", users)
+        result = []
+        for u in users.values():
+            if u["role"] != "student":
+                continue
+            if search and search.strip().lower() not in " ".join(str(u.get(k, "")) for k in
+                        ("student_number", "first_name", "last_name", "email")).lower():
+                continue
+            if program and program.strip().lower() not in u["program"].lower():
+                continue
+            if level and level.strip().lower() not in u["level"].lower():
+                continue
+            if active == "Actifs" and not u.get("is_active", True):
+                continue
+            if active == "Inactifs" and u.get("is_active", True):
+                continue
+            result.append(public_student(u))
+        return sorted(result, key=lambda u: str(u["student_number"]))[:500]
+
+    def update_student(self, admin_id, student_id, updates):
+        clean = normalize_profile(updates)
+        with self._lock:
+            self._user(admin_id, "admin")
+            users = self._users()
+            target = users.get(student_id)
+            if target is None or target["role"] != "student":
+                raise LookupError("Étudiant introuvable.")
+            for other in users.values():
+                if other["id"] == student_id:
+                    continue
+                if "email" in clean and other["email"] == clean["email"]:
+                    raise ValueError("E-mail déjà utilisé.")
+                if "student_number" in clean and other.get("student_number") == clean["student_number"]:
+                    raise ValueError("Numéro APOGÉE déjà utilisé.")
+            self._write("student_update", {"user_id": student_id, "updates": clean})
+            audit_event("student_profile_updated", admin_id, student_id)
+
 
 def make_engine(encoded_token):
     return DriveStore(encoded_token)
@@ -408,3 +489,15 @@ def respond(engine, admin_id, claim_id, status, response):
 
 def import_students(engine, admin_id, csv_text):
     return engine.import_students(admin_id, csv_text)
+
+
+def preview_students(engine, admin_id, csv_text):
+    return engine.preview_students(admin_id, csv_text)
+
+
+def list_students(engine, admin_id, search="", program="", level="", active="Tous"):
+    return engine.list_students(admin_id, search, program, level, active)
+
+
+def update_student(engine, admin_id, student_id, updates):
+    return engine.update_student(admin_id, student_id, updates)
